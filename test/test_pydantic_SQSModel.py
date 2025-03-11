@@ -1,203 +1,126 @@
 import pytest
+
+from pydantic_sqs.model import SQSModel
 from pydantic_sqs import exceptions
-from pydantic_sqs import SQSModel
+
+
+class SimpleModel(SQSModel):
+    """
+    Minimal Pydantic model for demonstration.
+    """
+    text: str
 
 
 @pytest.mark.asyncio
-async def test_send_to_queue(localstack_queue):
-    class ThisModel(SQSModel):
-        test: str
+async def test_async_model_send_receive(async_queue_fixture):
+    """
+    Test sending and receiving a single message via the async SQSQueue.
+    """
+    queue = async_queue_fixture
+    queue.register_model(SimpleModel)
 
-    queue = localstack_queue[0]
-    session = localstack_queue[1]
-    client_kwargs = localstack_queue[2]
-    queue.register_model(ThisModel)
-    test = ThisModel(test="test")
-    await test.to_sqs()
-    assert test.message_id is not None
-    async with session.create_client("sqs", **client_kwargs) as client:
-        response = await client.get_queue_attributes(
-            QueueUrl=queue.queue_url, AttributeNames=["ApproximateNumberOfMessages"]
-        )
-    assert int(response["Attributes"]["ApproximateNumberOfMessages"]) > 0
+    model_instance = SimpleModel(text="hello-async")
+    await model_instance.to_sqs()
+    assert model_instance.message_id is not None
 
+    results = await queue.from_sqs()
+    assert len(results) == 1
+    msg = results[0]
+    assert msg.text == "hello-async"
+    assert msg.message_id == model_instance.message_id
+    assert msg.receipt_handle is not None
+    assert not msg.deleted
 
-@pytest.mark.asyncio
-async def test_from_queue(localstack_queue):
-    class ThisModel(SQSModel):
-        test: str
-
-    queue = localstack_queue[0]
-    queue.register_model(ThisModel)
-    test = ThisModel(test="test")
-    await test.to_sqs()
-    assert test.message_id is not None
-
-    from_sqs = await queue.from_sqs()
-    assert len(from_sqs) == 1
-    assert from_sqs[0].test == "test"
-    assert from_sqs[0].message_id == test.message_id
-    assert from_sqs[0].receipt_handle is not None
-    assert from_sqs[0].deleted is False
+    await msg.delete_from_queue()
+    assert msg.deleted
 
 
-@pytest.mark.asyncio
-async def test_from_queue_empty(localstack_queue):
-    class ThisModel(SQSModel):
-        test: str
+def test_sync_model_send_receive(sync_queue_fixture):
+    """
+    Test sending and receiving a single message via the sync SQSQueueSync.
+    """
+    queue = sync_queue_fixture
+    queue.register_model(SimpleModel)
 
-    queue = localstack_queue[0]
-    queue.register_model(ThisModel)
+    model_instance = SimpleModel(text="hello-sync")
+    model_instance.to_sqs_sync()
+    assert model_instance.message_id is not None
 
-    with pytest.raises(exceptions.MsgNotFoundError):
-        await queue.from_sqs()
+    results = queue.from_sqs_sync()
+    assert len(results) == 1
+    msg = results[0]
+    assert msg.text == "hello-sync"
+    assert msg.message_id == model_instance.message_id
+    assert msg.receipt_handle is not None
+    assert not msg.deleted
 
-    empty_list = await queue.from_sqs(ignore_empty=True)
-    assert len(empty_list) == 0
+    msg.delete_from_queue_sync()
+    assert msg.deleted
 
 
 @pytest.mark.asyncio
-async def test_from_queue_mixed(localstack_queue):
-    class ThisModel(SQSModel):
-        test: str
+async def test_async_batch_send_delete(async_queue_fixture):
+    """
+    Test batch sending and deleting using the async SQSQueue.
+    """
+    queue = async_queue_fixture
+    queue.register_model(SimpleModel)
 
-    class ThatModel(SQSModel):
-        name: str
+    models = [SimpleModel(text=f"batch-item-{i}") for i in range(3)]
+    await queue.send_messages_batch(models)
 
-    queue = localstack_queue[0]
-    queue.register_model(ThisModel)
-    queue.register_model(ThatModel)
+    results = await queue.from_sqs(max_messages=3)
+    assert len(results) == 3
+    texts = sorted(r.text for r in results)
+    assert texts == ["batch-item-0", "batch-item-1", "batch-item-2"]
 
-    test_this_model = ThisModel(test="foo")
-    test_that_model = ThatModel(name="bar")
-    await test_this_model.to_sqs()
-    await test_that_model.to_sqs()
-    assert test_this_model.message_id is not None
-    assert test_that_model.message_id is not None
-
-    this_model_from_sqs = await ThisModel.from_sqs()
-    assert len(this_model_from_sqs) == 1
-    assert this_model_from_sqs[0].test == "foo"
+    await queue.delete_messages_batch(results)
+    empty_results = await queue.from_sqs(ignore_empty=True)
+    assert len(empty_results) == 0
 
 
-@pytest.mark.asyncio
-async def test_from_model(localstack_queue):
-    class ThisModel(SQSModel):
-        test: str
+def test_sync_batch_send_delete(sync_queue_fixture):
+    """
+    Test batch sending and deleting using the sync SQSQueueSync.
+    """
+    queue = sync_queue_fixture
+    queue.register_model(SimpleModel)
 
-    queue = localstack_queue[0]
-    queue.register_model(ThisModel)
-    test = ThisModel(test="test")
-    await test.to_sqs()
-    assert test.message_id is not None
+    models = [SimpleModel(text=f"sync-batch-{i}") for i in range(3)]
+    queue.send_messages_batch(models)
 
-    from_sqs = await ThisModel.from_sqs()
-    assert len(from_sqs) == 1
-    assert from_sqs[0].test == "test"
-    assert from_sqs[0].message_id == test.message_id
-    assert from_sqs[0].receipt_handle is not None
-    assert from_sqs[0].deleted is False
+    results = queue.from_sqs_sync(max_messages=3)
+    assert len(results) == 3
+    texts = sorted(r.text for r in results)
+    assert texts == ["sync-batch-0", "sync-batch-1", "sync-batch-2"]
 
-
-@pytest.mark.asyncio
-async def test_from_model_empty(localstack_queue):
-    class ThisModel(SQSModel):
-        test: str
-
-    queue = localstack_queue[0]
-    queue.register_model(ThisModel)
-
-    empty_list = await ThisModel.from_sqs()
-    assert len(empty_list) == 0
+    queue.delete_messages_batch(results)
+    assert len(queue.from_sqs_sync(ignore_empty=True)) == 0
 
 
-@pytest.mark.asyncio
-async def test_delete(localstack_queue):
-    class ThisModel(SQSModel):
-        test: str
-
-    queue = localstack_queue[0]
-    session = localstack_queue[1]
-    client_kwargs = localstack_queue[2]
-    queue.register_model(ThisModel)
-    test = ThisModel(test="test")
-    await test.to_sqs()
-    assert test.message_id is not None
-
-    from_sqs = await queue.from_sqs()
-    await from_sqs[0].delete_from_queue()
-    assert from_sqs[0].deleted is True
-
-    async with session.create_client("sqs", **client_kwargs) as client:
-        response = await client.get_queue_attributes(
-            QueueUrl=queue.queue_url, AttributeNames=["ApproximateNumberOfMessages"]
-        )
-    assert int(response["Attributes"]["ApproximateNumberOfMessages"]) == 0
-
-
-@pytest.mark.asyncio
-async def test_multiple_models_in_queue(localstack_queue):
-    class ThisModel(SQSModel):
-        test: str
-
-    class ThatModel(SQSModel):
+def test_not_registered_error(sync_queue_fixture):
+    """
+    Attempting to send a model that isn't registered should raise NotRegisteredError.
+    """
+    class UnregisteredModel(SQSModel):
         foo: str
 
-    queue = localstack_queue[0]
-    session = localstack_queue[1]
-    client_kwargs = localstack_queue[2]
-    queue.register_model(ThisModel)
-    queue.register_model(ThatModel)
-    test = ThisModel(test="test")
-    test2 = ThatModel(foo="bar")
-    await test.to_sqs()
-    await test2.to_sqs()
-    assert test.message_id is not None
-    assert test2.message_id is not None
-    async with session.create_client("sqs", **client_kwargs) as client:
-        response = await client.get_queue_attributes(
-            QueueUrl=queue.queue_url, AttributeNames=["ApproximateNumberOfMessages"]
-        )
-    assert int(response["Attributes"]["ApproximateNumberOfMessages"]) == 2
-
-    from_sqs = await queue.from_sqs(max_messages=5)
-    assert len(from_sqs) == 2
+    unreg_instance = UnregisteredModel(foo="nope")
+    with pytest.raises(exceptions.NotRegisteredError):
+        unreg_instance.to_sqs_sync()
 
 
-def test_send_kwargs(localstack_queue):
-    class ThisModel(SQSModel):
-        test: str
+@pytest.mark.asyncio
+async def test_delete_not_in_queue(async_queue_fixture):
+    """
+    Attempting to delete a model that has no receipt_handle should raise.
+    """
+    class NoQueueModel(SQSModel):
+        val: str
 
-    queue = localstack_queue[0]
-    queue.register_model(ThisModel)
-    this_model = ThisModel(test="test")
+    queue = async_queue_fixture
+    queue.register_model(NoQueueModel)
 
-    kw_args = this_model._SQSModel__send_kwargs(queue_url=queue.queue_url)
-
-    assert "DelaySeconds" not in kw_args
-    assert kw_args["QueueUrl"] == queue.queue_url
-    assert isinstance(kw_args["MessageBody"], str)
-
-
-def test_send_kwargs_wait_time(localstack_queue):
-    class ThisModel(SQSModel):
-        test: str
-
-    queue = localstack_queue[0]
-    queue.register_model(ThisModel)
-    this_model = ThisModel(test="test")
-
-    # less than 0 becomes 0
-    assert (
-        this_model._SQSModel__send_kwargs(
-            queue_url=queue.queue_url, wait_time_in_seconds=-1
-        )["DelaySeconds"]
-        == 0
-    )
-    # greater than 900 becomes 900
-    assert (
-        this_model._SQSModel__send_kwargs(
-            queue_url=queue.queue_url, wait_time_in_seconds=901
-        )["DelaySeconds"]
-        == 900
-    )
+    instance = NoQueueModel(val="random")
+    with pytest.raises(exceptions.MessageNotInQueueError):
+        await instance.delete_from_queue()

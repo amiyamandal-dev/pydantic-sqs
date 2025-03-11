@@ -1,6 +1,7 @@
 """Module containing the queue classes."""
 import asyncio
 import base64
+import binascii
 import json
 from typing import Any, Dict, List, Optional, Union
 
@@ -23,8 +24,8 @@ class BaseSQSQueue(_AbstractQueue):
     serializer: str = "json"  # JSON or 'msgpack'
 
     # Fine-tuned msgpack settings
-    _msgpack_pack_params = {"use_bin_type": True}
-    _msgpack_unpack_params = {"strict_map_key": False, "raw": False}
+    _msgpack_pack_params = {"use_bin_type": True, "strict_types": True}
+    _msgpack_unpack_params = {"strict_map_key": False, "raw": False, "unicode_errors": "replace"}
 
     def register_model(self, model_class: SQSModel):
         """
@@ -52,14 +53,21 @@ class BaseSQSQueue(_AbstractQueue):
             raise ValueError(f"Unsupported serializer: {self.serializer}")
 
     def _deserialize(self, data: str) -> Dict[str, Any]:
-        """
-        Deserialize from either JSON or Base64-encoded MessagePack.
-        """
-        if self.serializer == "json":
+        if self.serializer == "msgpack":
+            try:
+                raw = base64.b64decode(data, validate=True)
+            except (binascii.Error, ValueError) as e:
+                raise exceptions.InvalidMessageInQueueError(
+                    f"Invalid Base64 data in message: {str(e)}"
+                ) from e
+            try:
+                return msgpack.unpackb(raw, **self._msgpack_unpack_params)
+            except (msgpack.UnpackException, UnicodeDecodeError) as e:
+                raise exceptions.InvalidMessageInQueueError(
+                    f"Deserialization failed: {str(e)}"
+                ) from e
+        elif self.serializer == "json":
             return json.loads(data)
-        elif self.serializer == "msgpack":
-            raw = base64.b64decode(data)
-            return msgpack.unpackb(raw, **self._msgpack_unpack_params)
         else:
             raise ValueError(f"Unsupported serializer: {self.serializer}")
 

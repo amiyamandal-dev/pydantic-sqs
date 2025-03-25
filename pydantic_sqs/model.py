@@ -1,9 +1,10 @@
-import json
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
-from pydantic import field_validator, model_validator, Field
+from pydantic import field_validator, model_validator
+
 from pydantic_sqs import exceptions
 from pydantic_sqs.abstract import _AbstractModel
+
 
 class SQSModel(_AbstractModel):
     """

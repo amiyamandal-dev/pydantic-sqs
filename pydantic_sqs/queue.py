@@ -13,6 +13,10 @@ from pydantic_sqs.abstract import _AbstractQueue
 from pydantic_sqs.model import SQSModel
 
 
+class GenericPayload(SQSModel):
+    payload: Dict
+
+
 class BaseSQSQueue(_AbstractQueue):
     """
     Base class containing shared logic for both sync and async queue implementations.
@@ -81,11 +85,16 @@ class BaseSQSQueue(_AbstractQueue):
         try:
             model = self.models[message["model"]]
         except KeyError:
-            raise exceptions.InvalidMessageInQueueError(
-                f"No model registered for model type {message.get('model')} from {message_id}"
-            )
+            model = GenericPayload.__qualname__
 
         try:
+            if model == GenericPayload.__qualname__:
+                return GenericPayload(
+                    message_id=message_id,
+                    receipt_handle=receipt_handle,
+                    attributes=attributes,
+                    payload=message[message]
+                )
             return model(
                 message_id=message_id,
                 receipt_handle=receipt_handle,
@@ -96,7 +105,6 @@ class BaseSQSQueue(_AbstractQueue):
             raise exceptions.InvalidMessageInQueueError(
                 f"Invalid message {message_id} from queue {self.queue_url}"
             ) from exc
-
 
 
 class SQSQueueSync(BaseSQSQueue):
@@ -131,6 +139,7 @@ class SQSQueueSync(BaseSQSQueue):
         self.visibility_timeout = visibility_timeout
         self.wait_time_seconds = wait_time_seconds
         self.max_messages = max_messages
+        self.register_model(GenericPayload)
 
         if client is not None:
             self.client = client

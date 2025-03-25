@@ -26,6 +26,7 @@ def sqs_client():
 def test_queue_url(sqs_client):
     """Create a test queue and return its URL"""
     response = sqs_client.create_queue(QueueName=TEST_QUEUE_NAME)
+    print(response["QueueUrl"])
     return response["QueueUrl"]
 
 

@@ -1,5 +1,5 @@
 from typing import Any, Dict, Optional
-
+from loguru import logger
 from pydantic import field_validator, model_validator
 
 from pydantic_sqs import exceptions
@@ -23,18 +23,18 @@ class SQSModel(_AbstractModel):
         if v is None:
             return None
         if not isinstance(v, dict):
+            logger.error("Attributes provided are not a dict.")
             raise ValueError("attributes must be a dict")
         for key, val in v.items():
             if not isinstance(key, str) or not isinstance(val, str):
+                logger.error("Attributes keys/values are not strings.")
                 raise ValueError("attributes keys/values must be strings")
         return v
 
-    @model_validator(mode='after')
+    @model_validator(mode="after")
     def ensure_message_id_and_handle(self):
-        # In Pydantic v2, 'self' is the model instance, not a dictionary
-        msg_id = self.message_id
-        r_handle = self.receipt_handle
-        if msg_id and not r_handle:
+        if self.message_id and not self.receipt_handle:
+            logger.error("message_id provided without a corresponding receipt_handle.")
             raise ValueError("message_id requires receipt_handle")
         return self
 
@@ -59,6 +59,7 @@ class SQSModel(_AbstractModel):
         try:
             return cls._queue
         except AttributeError:
+            logger.error(f"{cls.__qualname__} not registered to a queue.")
             raise exceptions.NotRegisteredError(
                 f"{cls.__qualname__} not registered to a queue"
             ) from None
@@ -75,26 +76,33 @@ class SQSModel(_AbstractModel):
             ignore_unknown=True,
             parallel_processing=parallel_processing
         )
+        logger.info(f"Retrieved {len(results)} messages from SQS for model {cls.__qualname__}")
         return [res for res in results if isinstance(res, cls)]
 
     async def to_sqs(self, wait_time_in_seconds=None):
         queue = self.__get_queue()
         send_kwargs = self.__send_kwargs(queue.queue_url, wait_time_in_seconds)
+        logger.debug(f"Sending message to SQS with parameters: {send_kwargs}")
         async with queue.session.create_client("sqs", **queue.client_kwargs) as client:
             response = await client.send_message(**send_kwargs)
         self.message_id = response["MessageId"]
+        logger.info(f"Message sent to SQS. MessageId: {self.message_id}")
 
     async def delete_from_queue(self):
         if self.receipt_handle is None:
+            logger.error("Attempted to delete a message without receipt_handle.")
             raise exceptions.MessageNotInQueueError("No receipt_handle to delete.")
         if self.deleted:
+            logger.error("Attempted to delete a message that is already marked as deleted.")
             raise exceptions.MessageNotInQueueError("Already deleted.")
         queue = self.__get_queue()
+        logger.debug(f"Deleting message from queue {queue.queue_url} with receipt_handle: {self.receipt_handle}")
         async with queue.session.create_client("sqs", **queue.client_kwargs) as client:
             await client.delete_message(
                 QueueUrl=queue.queue_url, ReceiptHandle=self.receipt_handle
             )
         self.deleted = True
+        logger.info("Message successfully deleted from SQS.")
 
     @classmethod
     def from_sqs_sync(cls, max_messages=None, visibility_timeout=None,
@@ -107,21 +115,28 @@ class SQSModel(_AbstractModel):
             ignore_empty=ignore_empty,
             ignore_unknown=True
         )
+        logger.info(f"Synchronously retrieved {len(results)} messages for model {cls.__qualname__}")
         return [res for res in results if isinstance(res, cls)]
 
     def to_sqs_sync(self, wait_time_in_seconds=None):
         queue = self.__get_queue()
         send_kwargs = self.__send_kwargs(queue.queue_url, wait_time_in_seconds)
+        logger.debug(f"Synchronously sending message to SQS with parameters: {send_kwargs}")
         response = queue.client.send_message(**send_kwargs)
         self.message_id = response["MessageId"]
+        logger.info(f"Message synchronously sent to SQS. MessageId: {self.message_id}")
 
     def delete_from_queue_sync(self):
         if self.receipt_handle is None:
+            logger.error("Attempted synchronous deletion without receipt_handle.")
             raise exceptions.MessageNotInQueueError("No receipt_handle to delete.")
         if self.deleted:
+            logger.error("Attempted synchronous deletion of an already deleted message.")
             raise exceptions.MessageNotInQueueError("Already deleted.")
         queue = self.__get_queue()
+        logger.debug(f"Synchronously deleting message from queue {queue.queue_url} with receipt_handle: {self.receipt_handle}")
         queue.client.delete_message(
             QueueUrl=queue.queue_url, ReceiptHandle=self.receipt_handle
         )
         self.deleted = True
+        logger.info("Message successfully deleted synchronously from SQS.")
